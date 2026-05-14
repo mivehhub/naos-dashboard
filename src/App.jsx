@@ -1,5 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, Calculator, TrendingUp, AlertTriangle, CheckCircle2, TreePine } from "lucide-react";
+import { createClient } from "@supabase/supabase-js";
+
+console.log("SUPABASE URL:", import.meta.env.VITE_SUPABASE_URL)
+console.log("SUPABASE KEY:", import.meta.env.VITE_SUPABASE_ANON_KEY)
+
+const supabaseUrl = import.meta.env?.VITE_SUPABASE_URL || "";
+const supabaseKey = import.meta.env?.VITE_SUPABASE_ANON_KEY || "";
+const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 const crc = new Intl.NumberFormat("es-CR", {
   style: "currency",
@@ -107,7 +115,56 @@ export default function NaosPricingDashboard() {
   const [monthlyExpenses, setMonthlyExpenses] = useState(3000000);
   const [productiveHours, setProductiveHours] = useState(160);
   const [exchangeRate, setExchangeRate] = useState(510);
-  const [products, setProducts] = useState(initialProducts);
+  const [products, setProducts] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [statusMessage, setStatusMessage] = useState("Cargando productos...");
+  const [errorMessage, setErrorMessage] = useState("");
+
+  useEffect(() => {
+    loadProducts();
+  }, []);
+
+  async function loadProducts() {
+    setIsLoading(true);
+    setErrorMessage("");
+    setStatusMessage("Cargando productos...");
+
+    if (!supabase) {
+      setProducts(initialProducts);
+      setStatusMessage("Modo demo: conecta Supabase para guardar datos reales.");
+      setIsLoading(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("products")
+      .select("*")
+      .order("id", { ascending: true });
+
+    if (error) {
+      setErrorMessage("No se pudieron cargar los productos desde Supabase.");
+      setProducts(initialProducts);
+      setStatusMessage("Usando datos de ejemplo.");
+      setIsLoading(false);
+      return;
+    }
+
+    const formattedProducts = data.map((item) => ({
+      id: item.id,
+      name: item.name || "Producto sin nombre",
+      type: item.type || "premium",
+      materialCost: Number(item.material_cost || 0),
+      wastePercent: Number(item.waste_percent || 0),
+      laborHours: Number(item.labor_hours || 0),
+      complexity: item.complexity || "B",
+      marginPercent: Number(item.margin_percent || 0),
+      marketPrice: Number(item.market_price || 0),
+    }));
+
+    setProducts(formattedProducts.length ? formattedProducts : []);
+    setStatusMessage("Datos conectados a Supabase.");
+    setIsLoading(false);
+  }
 
   const hourlyRate = useMemo(() => {
     if (!productiveHours) return 0;
@@ -133,8 +190,10 @@ export default function NaosPricingDashboard() {
     );
   }, [productCalculations]);
 
-  const updateProduct = (id, field, value) => {
+  const updateProduct = async (id, field, value) => {
     const numericFields = ["materialCost", "wastePercent", "laborHours", "marginPercent", "marketPrice"];
+
+    let updatedProduct = null;
 
     setProducts((currentProducts) =>
       currentProducts.map((product) => {
@@ -143,41 +202,140 @@ export default function NaosPricingDashboard() {
         if (field === "type") {
           const selectedType = productTypes[value];
 
-          return {
+          updatedProduct = {
             ...product,
             type: value,
             marginPercent: selectedType ? selectedType.suggestedMargin : product.marginPercent,
             wastePercent: selectedType ? selectedType.suggestedWaste : product.wastePercent,
           };
+
+          return updatedProduct;
         }
 
-        return {
+        updatedProduct = {
           ...product,
           [field]: numericFields.includes(field) ? numberValue(value) : value,
         };
+
+        return updatedProduct;
       })
     );
+
+    if (!updatedProduct) return;
+
+    setStatusMessage("Guardando cambios...");
+    setErrorMessage("");
+
+    if (!supabase) {
+      setStatusMessage("Modo demo: cambio visible, pero no guardado en base de datos.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("products")
+      .update({
+        name: updatedProduct.name,
+        type: updatedProduct.type,
+        material_cost: updatedProduct.materialCost,
+        waste_percent: updatedProduct.wastePercent,
+        labor_hours: updatedProduct.laborHours,
+        complexity: updatedProduct.complexity,
+        margin_percent: updatedProduct.marginPercent,
+        market_price: updatedProduct.marketPrice,
+      })
+      .eq("id", id);
+
+    if (error) {
+      setErrorMessage("No se pudo guardar el cambio en Supabase.");
+      return;
+    }
+
+    setStatusMessage("Cambios guardados.");
   };
 
-  const addProduct = () => {
+  const addProduct = async () => {
+    const newProduct = {
+      name: "Nuevo producto",
+      type: "premium",
+      material_cost: 0,
+      waste_percent: productTypes.premium.suggestedWaste,
+      labor_hours: 1,
+      complexity: "B",
+      margin_percent: productTypes.premium.suggestedMargin,
+      market_price: 0,
+    };
+
+    setStatusMessage("Creando producto...");
+    setErrorMessage("");
+
+    if (!supabase) {
+      setProducts((current) => [
+        ...current,
+        {
+          id: Date.now(),
+          name: newProduct.name,
+          type: newProduct.type,
+          materialCost: Number(newProduct.material_cost || 0),
+          wastePercent: Number(newProduct.waste_percent || 0),
+          laborHours: Number(newProduct.labor_hours || 0),
+          complexity: newProduct.complexity,
+          marginPercent: Number(newProduct.margin_percent || 0),
+          marketPrice: Number(newProduct.market_price || 0),
+        },
+      ]);
+      setStatusMessage("Modo demo: producto creado, pero no guardado en Supabase.");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("products")
+      .insert([newProduct])
+      .select()
+      .single();
+
+    if (error) {
+      setErrorMessage("No se pudo crear el producto en Supabase.");
+      return;
+    }
+
     setProducts((current) => [
       ...current,
       {
-        id: Date.now(),
-        name: "Nuevo producto",
-        type: "premium",
-        materialCost: 0,
-        wastePercent: 10,
-        laborHours: 1,
-        complexity: "B",
-        marginPercent: productTypes.premium.suggestedMargin,
-        marketPrice: 0,
+        id: data.id,
+        name: data.name,
+        type: data.type,
+        materialCost: Number(data.material_cost || 0),
+        wastePercent: Number(data.waste_percent || 0),
+        laborHours: Number(data.labor_hours || 0),
+        complexity: data.complexity,
+        marginPercent: Number(data.margin_percent || 0),
+        marketPrice: Number(data.market_price || 0),
       },
     ]);
+
+    setStatusMessage("Producto creado y guardado.");
   };
 
-  const removeProduct = (id) => {
+  const removeProduct = async (id) => {
+    const previousProducts = products;
     setProducts((current) => current.filter((product) => product.id !== id));
+    setStatusMessage("Eliminando producto...");
+    setErrorMessage("");
+
+    if (!supabase) {
+      setStatusMessage("Modo demo: producto eliminado, pero no guardado en Supabase.");
+      return;
+    }
+
+    const { error } = await supabase.from("products").delete().eq("id", id);
+
+    if (error) {
+      setProducts(previousProducts);
+      setErrorMessage("No se pudo eliminar el producto en Supabase.");
+      return;
+    }
+
+    setStatusMessage("Producto eliminado.");
   };
 
   const totalMargin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : 0;
@@ -200,6 +358,16 @@ export default function NaosPricingDashboard() {
                 <p className="text-[#6f4a2d] mt-4 max-w-2xl text-base md:text-lg">
                   Control financiero para piezas artesanales, madera premium y proyectos personalizados.
                 </p>
+                <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-[#d9c4a7] bg-[#fffaf1]/80 px-3 py-1 text-[#6f4a2d]">
+                    {isLoading ? "Cargando..." : statusMessage}
+                  </span>
+                  {errorMessage && (
+                    <span className="rounded-full border border-red-300 bg-red-50 px-3 py-1 text-red-700">
+                      {errorMessage}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <button
@@ -233,6 +401,12 @@ export default function NaosPricingDashboard() {
         </div>
 
         <div className="space-y-4">
+          {!isLoading && productCalculations.length === 0 && (
+            <div className="rounded-[2rem] border border-[#d9c4a7] bg-[#fffaf1]/95 p-6 text-[#6f4a2d] shadow-xl shadow-[#6f4a2d]/10">
+              No hay productos todavía. Haz click en “Agregar producto” para crear el primero.
+            </div>
+          )}
+
           {productCalculations.map((product) => {
             const minMargin = productTypes[product.type]?.minMargin || 0;
             const suggestedMargin = productTypes[product.type]?.suggestedMargin || 0;
@@ -415,3 +589,4 @@ function SummaryCard({ title, value, icon }) {
     </div>
   );
 }
+console.log(import.meta.env)
